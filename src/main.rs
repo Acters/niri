@@ -49,11 +49,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         REMOVE_ENV_RUST_LIB_BACKTRACE.store(true, Ordering::Relaxed);
     }
 
-    // LOCAL FORK: pre-initialize the vulkan bridge before any DRM devices are
-    // opened (creating a vulkan instance after acquiring DRM master deadlocks
-    // the proprietary NVIDIA ICD inside this process).
-    smithay::backend::renderer::multigpu::vkbridge::preinit(None);
-
     let directives = env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_LOG_FILTER.to_owned());
     let env_filter = EnvFilter::builder().parse_lossy(directives);
     tracing_subscriber::fmt()
@@ -99,6 +94,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::set_var("XDG_CURRENT_DESKTOP", "niri");
         // Ensure the session type is set to Wayland for xdg-autostart and Qt apps.
         env::set_var("XDG_SESSION_TYPE", "wayland");
+    }
+
+    // LOCAL FORK: pre-initialize the vulkan bridge before any DRM devices are
+    // opened (creating a vulkan instance after acquiring DRM master deadlocks
+    // the proprietary NVIDIA ICD inside this process). Only for the compositor
+    // itself — NOT for `niri msg`/`validate`/etc. subcommands, which are
+    // short-lived CLI processes where a background vulkan init both wastes
+    // resources and can crash on exit (XOpenDisplay inside the NVIDIA loader).
+    if cli.subcommand.is_none() {
+        smithay::backend::renderer::multigpu::vkbridge::preinit(None);
     }
 
     // Handle subcommands.
