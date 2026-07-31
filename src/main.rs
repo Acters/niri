@@ -49,6 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         REMOVE_ENV_RUST_LIB_BACKTRACE.store(true, Ordering::Relaxed);
     }
 
+    // LOCAL FORK: pre-initialize the vulkan bridge before any DRM devices are
+    // opened (creating a vulkan instance after acquiring DRM master deadlocks
+    // the proprietary NVIDIA ICD inside this process).
+    smithay::backend::renderer::multigpu::vkbridge::preinit(None);
+
     let directives = env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_LOG_FILTER.to_owned());
     let env_filter = EnvFilter::builder().parse_lossy(directives);
     tracing_subscriber::fmt()
