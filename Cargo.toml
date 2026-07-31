@@ -106,6 +106,7 @@ features = [
     "backend_libinput",
     "backend_session_libseat",
     "backend_udev",
+    "backend_vulkan",
     "backend_winit",
     "desktop",
     "renderer_gl",
@@ -186,3 +187,8 @@ assets = [
     ["resources/niri.service", "/usr/lib/systemd/user/", "644"],
     ["resources/niri-shutdown.target", "/usr/lib/systemd/user/", "644"],
 ]
+
+# Local fork with the vulkan bridge for multigpu cross-device copies.
+[patch."https://github.com/Smithay/smithay.git"]
+smithay = { path = "/home/acters/Downloads/acters_git/smithay" }
+smithay-drm-extras = { path = "/home/acters/Downloads/acters_git/smithay/smithay-drm-extras" }
