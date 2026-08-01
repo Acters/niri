@@ -467,7 +467,64 @@ impl Tty {
             .unwrap();
 
         let api = GbmGlesBackend::with_context_priority(ContextPriority::High);
-        let gpu_manager = GpuManager::new(api).context("error creating the GPU manager")?;
+        let mut gpu_manager = GpuManager::new(api).context("error creating the GPU manager")?;
+
+        // The vulkan bridge worker notifies this channel when a copy completes,
+        // so we can present the completed frame even when nothing else damages
+        // the output (otherwise completed copies wait for unrelated damage).
+        let (completion_sender, completion_channel) = calloop::channel::channel::<()>();
+        gpu_manager.set_completion_notifier(move || {
+            let _ = completion_sender.send(());
+        });
+        event_loop
+            .insert_source(completion_channel, move |event, _, state| {
+                if let calloop::channel::Event::Msg(()) = event {
+                    debug!("vkbridge completion notify received, queueing redraws");
+                    let tty = state.backend.tty();
+                    let primary = tty.primary_render_node;
+                    let outputs: Vec<_> = state
+                        .niri
+                        .output_state
+                        .keys()
+                        .filter(|output| {
+                            output
+                                .user_data()
+                                .get::<TtyOutputState>()
+                                .map(|s| s.node != primary)
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect();
+                    // Only redraw when a NEW completed copy is waiting to be
+                    // presented AND no frame is already queued. This covers the
+                    // static-after-move case (the empty-workspace copy that
+                    // would otherwise never be shown) without feeding a
+                    // notify->redraw->copy->notify loop at max render rate:
+                    // damage-driven frames present completed copies at vblank
+                    // pace on their own.
+                    if !tty.gpu_manager.bridge_pending_completed() {
+                        return;
+                    }
+                    for output in outputs {
+                        let already_queued = state
+                            .niri
+                            .output_state
+                            .get(&output)
+                            .map(|s| {
+                                matches!(
+                                    s.redraw_state,
+                                    RedrawState::Queued
+                                        | RedrawState::WaitingForEstimatedVBlankAndQueued(_)
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !already_queued {
+                            state.niri.queue_redraw(&output);
+                        }
+                    }
+                }
+            })
+            .unwrap();
 
         let (primary_node, primary_render_node) = primary_node_from_config(&config.borrow())
             .ok_or(())
