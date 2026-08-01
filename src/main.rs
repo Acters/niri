@@ -102,7 +102,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // itself — NOT for `niri msg`/`validate`/etc. subcommands, which are
     // short-lived CLI processes where a background vulkan init both wastes
     // resources and can crash on exit (XOpenDisplay inside the NVIDIA loader).
-    if cli.subcommand.is_none() {
+    // Preinit runs by default (instance-only is direct-scanout safe);
+    // NIRI_VKBRIDGE=0 opts out for A/B testing.
+    if cli.subcommand.is_none()
+        && std::env::var_os("NIRI_VKBRIDGE").map(|v| v != "0").unwrap_or(true)
+    {
         smithay::backend::renderer::multigpu::vkbridge::preinit(None);
     }
 
