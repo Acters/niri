@@ -20,7 +20,7 @@ use niri_ipc::{HSyncPolarity, VSyncPolarity};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::allocator::Fourcc;
+use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{
@@ -857,7 +857,7 @@ impl Tty {
             niri.update_shaders();
 
             // Create the dmabuf global.
-            let primary_formats = renderer.dmabuf_formats();
+            let primary_formats = add_linear_dmabuf_feedback_fallbacks(renderer.dmabuf_formats());
             let default_feedback =
                 DmabufFeedbackBuilder::new(render_node.dev_id(), primary_formats.clone())
                     .build()
@@ -1492,7 +1492,8 @@ impl Tty {
 
         let mut dmabuf_feedback = None;
         if let Ok(primary_renderer) = self.gpu_manager.single_renderer(&self.primary_render_node) {
-            let primary_formats = primary_renderer.dmabuf_formats();
+            let primary_formats =
+                add_linear_dmabuf_feedback_fallbacks(primary_renderer.dmabuf_formats());
 
             match surface_dmabuf_feedback(
                 &compositor,
@@ -2798,6 +2799,45 @@ fn ignored_nodes_from_config(config: &Config) -> HashSet<DrmNode> {
     }
 
     disabled_nodes
+}
+
+/// Add an explicit linear alternative for formats that are only reported with
+/// implicit layout.
+///
+/// This is a diagnostic fallback for cross-GPU clients on legacy render nodes
+/// without explicit modifier support. In particular, NVIDIA Vulkan WSI may
+/// reject Wayland presentation when an AMD GFX6-8 primary renderer advertises
+/// only `DRM_FORMAT_MOD_INVALID`, even though a linear PRIME buffer is usable.
+fn add_linear_dmabuf_feedback_fallbacks(formats: FormatSet) -> FormatSet {
+    let linear_formats = formats
+        .iter()
+        .filter(|format| format.modifier == Modifier::Invalid)
+        .map(|format| Format {
+            code: format.code,
+            modifier: Modifier::Linear,
+        })
+        .collect::<Vec<_>>();
+
+    formats.into_iter().chain(linear_formats).collect()
+}
+
+#[cfg(test)]
+#[test]
+fn linear_dmabuf_feedback_fallback_is_added_for_implicit_format() {
+    let implicit = Format {
+        code: Fourcc::Argb8888,
+        modifier: Modifier::Invalid,
+    };
+    let linear = Format {
+        code: Fourcc::Argb8888,
+        modifier: Modifier::Linear,
+    };
+
+    let formats = add_linear_dmabuf_feedback_fallbacks([implicit].into_iter().collect());
+
+    assert!(formats.contains(&implicit));
+    assert!(formats.contains(&linear));
+    assert_eq!(formats.iter().count(), 2);
 }
 
 fn surface_dmabuf_feedback(
