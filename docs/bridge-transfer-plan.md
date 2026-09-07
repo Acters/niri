@@ -81,6 +81,12 @@ Test 1 used niri `22bcd968` / Smithay `d66ad5ed` with transfers enabled and `NIR
 
 During instance creation niri logged an X11 abstract-socket connection and spawned xwayland-satellite. This suggests loader/layer display interaction may matter; it does not establish the historical deadlock's root cause. Keep background initialization, and do not infer synchronous compositor-main-thread initialization is safe from this test.
 
-The follow-up replaces custom Preinit/global handoff with Smithay Instance/PhysicalDevice wrappers and removes niri's early startup hook (`src/main.rs` now matches upstream). Smithay checkpoint: `319551f8`. Nine transfer tests, strict transfer Clippy, niri workspace check, direct 8/10-bit pixel probes, and the 72-frame ten-bit MultiRenderer/invalidation probe pass. The wrapper-based real-session test is next (restart 2 of the approved maximum 3).
+The follow-up replaces custom Preinit/global handoff with Smithay Instance/PhysicalDevice wrappers and removes niri's early startup hook (`src/main.rs` now matches upstream). Smithay checkpoint: `319551f8`. Nine transfer tests, strict transfer Clippy, niri workspace check, direct 8/10-bit pixel probes, and the 72-frame ten-bit MultiRenderer/invalidation probe pass. The wrapper-based real-session test passed as restart 2 of the approved maximum 3.
 
-Test 1 uses `/home/acters/.local/bin/niri-init-test` via `96-initialization-test.conf`; removing that drop-in restores phase one. Vulkan-to-KMS work remains phase 3.
+Test 2 ran niri `8d3bd6c8` / Smithay `319551f8`, invocation `d18041addc314948a6d1aba02cc2d43f`. Display/IPC startup completed at 16:25:42.944 UTC; lazy instance initialization began at 16:25:43.111. Instance creation took 198 ms and the logical device was ready after 275 ms. Native-fence transfers activated at 16:25:45.111. The user confirmed it looks correct and authorized proceeding to non-disruptive KMS feasibility checks. The 216 niri/config/IPC tests were rerun and passed for this version.
+
+Current service uses `/home/acters/.local/bin/niri-lazy-transfer` via `96-initialization-test.conf`; removing that drop-in restores phase one. The intermediate raw-late `niri-init-test` and original binaries are preserved. No further initialization restart is needed; do not treat the unused restart allowance as permission for display takeover/KMS tests.
+
+## Phase 3: direct transfer to scanout feasibility
+
+Start with render-node-only SCANOUT|RENDERING LINEAR allocation/copy/readback tests. These cannot establish KMS admissibility or fence acceptance. Atomic TEST_ONLY and actual-display tests need separately coordinated KMS authority; no display takeover has been authorized yet. Implement an opt-in direct-to-bound-target path only after the feasibility gates succeed, preserving DrmCompositor slot ownership and target GLES ordering.
