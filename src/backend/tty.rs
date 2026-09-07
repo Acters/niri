@@ -70,8 +70,6 @@ use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
-mod kms_probe;
-
 // When copying from rendering Nvidia dGPU to target iGPU,
 // it only understands X/Abgr and not X/Argb.
 const SUPPORTED_COLOR_FORMATS_10BIT: [Fourcc; 3] =
@@ -86,6 +84,8 @@ pub struct Tty {
     udev_dispatcher: Dispatcher<'static, UdevBackend, State>,
     libinput: Libinput,
     gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>,
+    // Opt-in direct transfer into eligible foreign-output swapchain buffers.
+    direct_target_transfer: bool,
     // DRM node corresponding to the primary GPU. May or may not be the same as
     // primary_render_node.
     primary_node: DrmNode,
@@ -469,12 +469,14 @@ impl Tty {
         let mut gpu_manager = GpuManager::new(api).context("error creating the GPU manager")?;
 
         // Transfers preserve the current frame's SyncPoint; normal DRM scheduling
-        // handles presentation. The opt-out disables the transfer, not just preinit.
-        gpu_manager.set_vulkan_transfer_enabled(
-            std::env::var_os("NIRI_VKBRIDGE")
-                .map(|v| v != "0")
-                .unwrap_or(true),
-        );
+        // handles presentation. Direct target writes are a separate, explicit opt-in.
+        let vulkan_transfer = std::env::var_os("NIRI_VKBRIDGE")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        let direct_target_transfer =
+            vulkan_transfer && std::env::var_os("NIRI_VK_DIRECT_TARGET").is_some_and(|v| v == "1");
+        gpu_manager.set_vulkan_transfer_enabled(vulkan_transfer);
+        gpu_manager.set_vulkan_direct_target_enabled(direct_target_transfer);
 
         let (primary_node, primary_render_node) = primary_node_from_config(&config.borrow())
             .ok_or(())
@@ -505,16 +507,13 @@ impl Tty {
         }
         info!("using as the render node: {node_path}");
 
-        // Diagnostic only; a missing opt-in performs no work. Vulkan initialization stays
-        // off the event-loop thread, and the delayed KMS request is strictly atomic TEST_ONLY.
-        kms_probe::register(&event_loop, primary_render_node);
-
         Ok(Self {
             config,
             session,
             udev_dispatcher,
             libinput,
             gpu_manager,
+            direct_target_transfer,
             primary_node,
             primary_render_node,
             ignored_nodes: HashSet::new(),
@@ -1451,6 +1450,25 @@ impl Tty {
             })
             .collect::<FormatSet>();
 
+        // Only foreign atomic outputs opt into the validated LINEAR scanout route.
+        // Native outputs and client direct-scanout negotiation stay unchanged.
+        let direct_formats = if self.direct_target_transfer
+            && render_node != self.primary_render_node
+            && device.drm.is_atomic()
+        {
+            render_formats
+                .iter()
+                .copied()
+                .filter(|format| {
+                    format.modifier == Modifier::Linear
+                        && matches!(format.code, Fourcc::Abgr8888 | Fourcc::Abgr2101010)
+                })
+                .collect::<FormatSet>()
+        } else {
+            FormatSet::default()
+        };
+        let prefer_direct_target = direct_formats.iter().next().is_some();
+
         let color_formats = if self.config.borrow().debug.disable_10bit_output {
             &SUPPORTED_COLOR_FORMATS[..]
         } else {
@@ -1459,8 +1477,10 @@ impl Tty {
         .iter()
         .copied();
 
-        // Create the compositor.
-        let res = DrmCompositor::new(
+        // Create the compositor. The constructor validates actual allocations against KMS;
+        // asking for LINEAR is not by itself proof that the allocation is eligible.
+        let requested_vrr = surface.vrr_enabled();
+        let mut res = DrmCompositor::new(
             OutputModeSource::Auto(output.downgrade()),
             surface,
             None,
@@ -1469,10 +1489,37 @@ impl Tty {
             color_formats.clone(),
             // This is only used to pick a good internal format, so it can use the surface's render
             // formats, even though we only ever render on the primary GPU.
-            render_formats.clone(),
+            if prefer_direct_target {
+                direct_formats
+            } else {
+                render_formats.clone()
+            },
             device.drm.cursor_size(),
             Some(device.gbm.clone()),
         );
+
+        if prefer_direct_target && res.is_err() {
+            warn!(error = ?res.as_ref().err(), "LINEAR direct-target negotiation failed; retrying normal swapchain formats");
+            let surface = device
+                .drm
+                .create_surface(crtc, mode, &[connector.handle()])?;
+            if requested_vrr {
+                surface
+                    .use_vrr(true)
+                    .context("restoring VRR after direct-target negotiation fallback")?;
+            }
+            res = DrmCompositor::new(
+                OutputModeSource::Auto(output.downgrade()),
+                surface,
+                None,
+                device.allocator.clone(),
+                GbmFramebufferExporter::new(device.gbm.clone(), device.render_node.into()),
+                color_formats.clone(),
+                render_formats.clone(),
+                device.drm.cursor_size(),
+                Some(device.gbm.clone()),
+            );
+        }
 
         let mut compositor = match res {
             Ok(x) => x,
@@ -1489,6 +1536,11 @@ impl Tty {
                 let surface = device
                     .drm
                     .create_surface(crtc, mode, &[connector.handle()])?;
+                if prefer_direct_target && requested_vrr {
+                    surface
+                        .use_vrr(true)
+                        .context("restoring VRR after direct-target format fallback")?;
+                }
 
                 DrmCompositor::new(
                     OutputModeSource::Auto(output.downgrade()),
@@ -1504,6 +1556,10 @@ impl Tty {
                 .context("error creating DRM compositor")?
             }
         };
+
+        if prefer_direct_target {
+            info!(output = %connector_name, format = ?compositor.format(), modifiers = ?compositor.modifiers(), "direct-target candidate swapchain negotiated (actual framebuffer eligibility checked per frame)");
+        }
 
         if self.debug_tint {
             compositor.set_debug_flags(DebugFlags::TINT);
