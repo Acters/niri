@@ -190,5 +190,5 @@ assets = [
 
 # Fork with the vulkan bridge for multigpu cross-device copies.
 [patch."https://github.com/Smithay/smithay.git"]
-smithay = { git = "https://github.com/Acters/smithay.git", branch = "nvidia-intel-bridge" }
-smithay-drm-extras = { git = "https://github.com/Acters/smithay.git", branch = "nvidia-intel-bridge" }
+smithay = { path = "../smithay-nvidia-intel-bridge" }
+smithay-drm-extras = { path = "../smithay-nvidia-intel-bridge/smithay-drm-extras" }
