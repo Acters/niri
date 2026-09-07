@@ -96,16 +96,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::set_var("XDG_SESSION_TYPE", "wayland");
     }
 
-    // LOCAL FORK: pre-initialize the vulkan bridge before any DRM devices are
-    // opened (creating a vulkan instance after acquiring DRM master deadlocks
-    // the proprietary NVIDIA ICD inside this process). Only for the compositor
-    // itself — NOT for `niri msg`/`validate`/etc. subcommands, which are
-    // short-lived CLI processes where a background vulkan init both wastes
-    // resources and can crash on exit (XOpenDisplay inside the NVIDIA loader).
-    // Preinit runs by default (instance-only is direct-scanout safe);
-    // NIRI_VKBRIDGE=0 opts out for A/B testing.
+    // Experimental initialization-order comparison. Keep transfer enablement
+    // separate: NIRI_VKBRIDGE_PREINIT=0 skips only early instance preparation,
+    // while NIRI_VKBRIDGE=0 disables the transfer itself in the TTY backend.
+    // Neither path initializes Vulkan for short-lived CLI subcommands.
     if cli.subcommand.is_none()
         && std::env::var_os("NIRI_VKBRIDGE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+        && std::env::var_os("NIRI_VKBRIDGE_PREINIT")
             .map(|v| v != "0")
             .unwrap_or(true)
     {
