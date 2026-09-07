@@ -70,6 +70,8 @@ use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
+mod kms_probe;
+
 // When copying from rendering Nvidia dGPU to target iGPU,
 // it only understands X/Abgr and not X/Argb.
 const SUPPORTED_COLOR_FORMATS_10BIT: [Fourcc; 3] =
@@ -502,6 +504,10 @@ impl Tty {
             write!(node_path, "{primary_render_node}").unwrap();
         }
         info!("using as the render node: {node_path}");
+
+        // Diagnostic only; a missing opt-in performs no work. Vulkan initialization stays
+        // off the event-loop thread, and the delayed KMS request is strictly atomic TEST_ONLY.
+        kms_probe::register(&event_loop, primary_render_node);
 
         Ok(Self {
             config,
