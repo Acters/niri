@@ -65,4 +65,10 @@ Phase 1 implementation passes workspace checks, 216 niri/config/IPC tests, eight
 
 Smithay phase 1 checkpoint: `b4ee98e8`.
 
-Ready for a coordinated experimental compositor session. No experimental binary installed. Initialization-order and Vulkan-to-KMS experiments remain separate later phases. Niri's experimental Cargo patches intentionally point to the companion local checkout; no experimental commits have been pushed.
+Niri phase 1 checkpoint: `1a794dca`. After explicit user approval, the release binary was installed alongside the baseline as `/home/acters/.local/bin/niri-transfer-engine` and selected by `/home/acters/.config/systemd/user/niri.service.d/95-transfer-engine-test.conf`. The original `/home/acters/.local/bin/niri` (`de0a09fa`) is unchanged.
+
+The approved restart succeeded on 2026-09-07 at 15:56 UTC. All three outputs are active (eDP-1 ~144 Hz, DP-1 ~240 Hz, HDMI-A-1 ~75 Hz). The new process reports `1a794dca`; its journal confirms same-frame Vulkan submissions from renderD129 to renderD128 with native fences. User visual feedback is still needed before treating the session as fully validated.
+
+Rollback: remove only `95-transfer-engine-test.conf`, run `systemctl --user daemon-reload`, then restart `niri.service` at a coordinated time. This restores the existing `90-local-build.conf` and baseline binary.
+
+Initialization-order and Vulkan-to-KMS experiments remain separate later phases. Niri's experimental Cargo patches intentionally point to the companion local checkout; no experimental commits have been pushed.
