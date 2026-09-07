@@ -71,4 +71,16 @@ The approved restart succeeded on 2026-09-07 at 15:56 UTC. All three outputs are
 
 Rollback: remove only `95-transfer-engine-test.conf`, run `systemctl --user daemon-reload`, then restart `niri.service` at a coordinated time. This restores the existing `90-local-build.conf` and baseline binary.
 
-Initialization-order and Vulkan-to-KMS experiments remain separate later phases. Niri's experimental Cargo patches intentionally point to the companion local checkout; no experimental commits have been pushed.
+Niri's experimental Cargo patches intentionally point to the companion local checkout; no experimental commits have been pushed.
+
+## Phase 2: initialization ordering
+
+The user confirmed phase one looks correct and approved up to three controlled initialization-test restarts, with phase one retained for rollback.
+
+Test 1 used niri `22bcd968` / Smithay `d66ad5ed` with transfers enabled and `NIRI_VKBRIDGE_PREINIT=0`. It ran as the real compositor (invocation `71ec47fe3bae45329b9bf4a8e445b25c`). At 16:09:00.443 UTC displays/IPC were ready; at 16:09:00.476 Vulkan initialization began with `preinitialized=false`. Instance creation completed in 318 ms and the logical device was ready after 417 ms total. Same-frame native-fence transfers followed. No late-initialization hang reproduced on NVIDIA 610.57.04.
+
+During instance creation niri logged an X11 abstract-socket connection and spawned xwayland-satellite. This suggests loader/layer display interaction may matter; it does not establish the historical deadlock's root cause. Keep background initialization, and do not infer synchronous compositor-main-thread initialization is safe from this test.
+
+The follow-up replaces custom Preinit/global handoff with Smithay Instance/PhysicalDevice wrappers and removes niri's early startup hook (`src/main.rs` now matches upstream). Smithay checkpoint: `319551f8`. Nine transfer tests, strict transfer Clippy, niri workspace check, direct 8/10-bit pixel probes, and the 72-frame ten-bit MultiRenderer/invalidation probe pass. The wrapper-based real-session test is next (restart 2 of the approved maximum 3).
+
+Test 1 uses `/home/acters/.local/bin/niri-init-test` via `96-initialization-test.conf`; removing that drop-in restores phase one. Vulkan-to-KMS work remains phase 3.

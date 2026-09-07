@@ -96,21 +96,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::set_var("XDG_SESSION_TYPE", "wayland");
     }
 
-    // Experimental initialization-order comparison. Keep transfer enablement
-    // separate: NIRI_VKBRIDGE_PREINIT=0 skips only early instance preparation,
-    // while NIRI_VKBRIDGE=0 disables the transfer itself in the TTY backend.
-    // Neither path initializes Vulkan for short-lived CLI subcommands.
-    if cli.subcommand.is_none()
-        && std::env::var_os("NIRI_VKBRIDGE")
-            .map(|v| v != "0")
-            .unwrap_or(true)
-        && std::env::var_os("NIRI_VKBRIDGE_PREINIT")
-            .map(|v| v != "0")
-            .unwrap_or(true)
-    {
-        smithay::backend::renderer::multigpu::vkbridge::preinit(None);
-    }
-
     // Handle subcommands.
     if let Some(subcommand) = cli.subcommand {
         match subcommand {
