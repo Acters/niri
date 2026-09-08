@@ -31,7 +31,9 @@ use smithay::backend::egl::{EGLDevice, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
-use smithay::backend::renderer::multigpu::{GpuManager, MultiFrame, MultiRenderer};
+use smithay::backend::renderer::multigpu::{
+    GpuManager, MultiFrame, MultiRenderer, VulkanCopyDevice,
+};
 use smithay::backend::renderer::{DebugFlags, ImportDma, ImportEgl, RendererSuper};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
@@ -71,6 +73,7 @@ use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
 mod pacing;
+mod transfer_formats;
 
 use smithay::backend::renderer::multigpu::timing::{self, Counter, Stage};
 
@@ -82,6 +85,20 @@ const SUPPORTED_COLOR_FORMATS_10BIT: [Fourcc; 3] =
 // Smithay should fall back to Xrgb/Xbgr automatically if needed.
 const SUPPORTED_COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Abgr8888];
 
+fn is_ccs_modifier(modifier: Modifier) -> bool {
+    matches!(
+        modifier,
+        Modifier::I915_y_tiled_ccs
+            | Modifier::Unrecognized(0x100000000000005)
+            | Modifier::I915_y_tiled_gen12_rc_ccs
+            | Modifier::I915_y_tiled_gen12_mc_ccs
+            | Modifier::Unrecognized(0x100000000000008)
+            | Modifier::Unrecognized(0x10000000000000a)
+            | Modifier::Unrecognized(0x10000000000000b)
+            | Modifier::Unrecognized(0x10000000000000c)
+    )
+}
+
 pub struct Tty {
     config: Rc<RefCell<Config>>,
     session: LibSeatSession,
@@ -90,6 +107,7 @@ pub struct Tty {
     gpu_manager: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>,
     // Opt-in direct transfer into eligible foreign-output swapchain buffers.
     direct_target_transfer: bool,
+    vulkan_copy_device: VulkanCopyDevice,
     // DRM node corresponding to the primary GPU. May or may not be the same as
     // primary_render_node.
     primary_node: DrmNode,
@@ -414,6 +432,7 @@ struct Surface {
     presentation_misprediction_plot_name: tracy_client::PlotName,
     sequence_delta_plot_name: tracy_client::PlotName,
     pacing: pacing::SurfaceTiming,
+    transfer_formats: transfer_formats::TransferFormats,
 }
 
 pub struct SurfaceDmabufFeedback {
@@ -499,10 +518,17 @@ impl Tty {
             .unwrap_or(true);
         let direct_target_transfer =
             vulkan_transfer && std::env::var_os("NIRI_VK_DIRECT_TARGET").is_some_and(|v| v == "1");
+        let vulkan_copy_device = match std::env::var("NIRI_VK_COPY_DEVICE").as_deref() {
+            Ok("target") => VulkanCopyDevice::Target,
+            Ok("render") | Err(_) => VulkanCopyDevice::Render,
+            Ok(other) => {
+                warn!("unknown NIRI_VK_COPY_DEVICE={other:?}; using render GPU");
+                VulkanCopyDevice::Render
+            }
+        };
         gpu_manager.set_vulkan_transfer_enabled(vulkan_transfer);
+        gpu_manager.set_vulkan_copy_device(vulkan_copy_device);
         gpu_manager.set_vulkan_direct_target_enabled(direct_target_transfer);
-        pacing::register_reporter(&event_loop, direct_target_transfer);
-
         let (primary_node, primary_render_node) = primary_node_from_config(&config.borrow())
             .ok_or(())
             .or_else(|()| {
@@ -531,6 +557,12 @@ impl Tty {
             write!(node_path, "{primary_render_node}").unwrap();
         }
         info!("using as the render node: {node_path}");
+        pacing::register_reporter(
+            &event_loop,
+            direct_target_transfer,
+            primary_render_node,
+            vulkan_copy_device,
+        );
 
         Ok(Self {
             config,
@@ -539,6 +571,7 @@ impl Tty {
             libinput,
             gpu_manager,
             direct_target_transfer,
+            vulkan_copy_device,
             primary_node,
             primary_render_node,
             ignored_nodes: HashSet::new(),
@@ -1454,30 +1487,15 @@ impl Tty {
                     return format.modifier == Modifier::Linear;
                 }
 
-                let is_ccs = matches!(
-                    format.modifier,
-                    Modifier::I915_y_tiled_ccs
-                    // I915_FORMAT_MOD_Yf_TILED_CCS
-                    | Modifier::Unrecognized(0x100000000000005)
-                    | Modifier::I915_y_tiled_gen12_rc_ccs
-                    | Modifier::I915_y_tiled_gen12_mc_ccs
-                    // I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC
-                    | Modifier::Unrecognized(0x100000000000008)
-                    // I915_FORMAT_MOD_4_TILED_DG2_RC_CCS
-                    | Modifier::Unrecognized(0x10000000000000a)
-                    // I915_FORMAT_MOD_4_TILED_DG2_MC_CCS
-                    | Modifier::Unrecognized(0x10000000000000b)
-                    // I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC
-                    | Modifier::Unrecognized(0x10000000000000c)
-                );
-
-                !is_ccs
+                !is_ccs_modifier(format.modifier)
             })
             .collect::<FormatSet>();
 
-        // Only foreign atomic outputs opt into the validated LINEAR scanout route.
-        // Native outputs and client direct-scanout negotiation stay unchanged.
+        // Source-side Vulkan copies retain the validated LINEAR scanout preference.
+        // Target-side copies start with normal formats, then use capability-ready
+        // native modifier negotiation. Native outputs/client scanout stay unchanged.
         let direct_formats = if self.direct_target_transfer
+            && self.vulkan_copy_device == VulkanCopyDevice::Render
             && render_node != self.primary_render_node
             && device.drm.is_atomic()
         {
@@ -1645,6 +1663,7 @@ impl Tty {
             presentation_misprediction_plot_name,
             sequence_delta_plot_name,
             pacing: pacing::SurfaceTiming::default(),
+            transfer_formats: transfer_formats::TransferFormats::default(),
         };
 
         let res = device.surfaces.insert(crtc, surface);
@@ -1979,6 +1998,11 @@ impl Tty {
         let _timing_scope = timing::enter(pacing::id(tty_state.node, tty_state.crtc));
         let _frame_time = timing::time(Stage::NiriFrame);
         timing::count(Counter::FrameAttempts, 1);
+        if let Err(err) = transfer_formats::update(self, tty_state.node, tty_state.crtc) {
+            warn!("reverse transfer capability update failed: {err:#}");
+            timing::count(Counter::RenderErrors, 1);
+            return rv;
+        }
         let Some(device) = self.devices.get_mut(&tty_state.node) else {
             error!("missing output device");
             return rv;
@@ -2008,6 +2032,12 @@ impl Tty {
             Err(err) => {
                 warn!("error creating renderer for primary GPU: {err:?}");
                 timing::count(Counter::RenderErrors, 1);
+                if let Some(delay) = surface
+                    .transfer_formats
+                    .rollback(&mut surface.compositor, &device.allocator)
+                {
+                    transfer_formats::schedule_retry(niri, output, delay);
+                }
                 return rv;
             }
         };
@@ -2153,6 +2183,15 @@ impl Tty {
                 // Can fail if we switched to a different TTY.
                 timing::count(Counter::RenderErrors, 1);
                 warn!("error rendering frame: {err}");
+            }
+        }
+
+        if rv == RenderResult::Skipped {
+            if let Some(delay) = surface
+                .transfer_formats
+                .rollback(&mut surface.compositor, &device.allocator)
+            {
+                transfer_formats::schedule_retry(niri, output, delay);
             }
         }
 

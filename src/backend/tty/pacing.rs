@@ -191,7 +191,12 @@ impl Drop for ControlSocket {
 
 /// No timer, thread or file is created unless SMITHAY_FRAME_TIMING=1. A supplied file path
 /// is required to avoid unexpectedly writing diagnostics elsewhere. The file is append-only.
-pub(super) fn register_reporter(event_loop: &LoopHandle<'static, State>, direct_target: bool) {
+pub(super) fn register_reporter(
+    event_loop: &LoopHandle<'static, State>,
+    direct_target: bool,
+    render_node: DrmNode,
+    copy_device: smithay::backend::renderer::multigpu::VulkanCopyDevice,
+) {
     if !timing::enabled() {
         return;
     }
@@ -205,6 +210,7 @@ pub(super) fn register_reporter(event_loop: &LoopHandle<'static, State>, direct_
     let header = serde_json::json!({
         "type": "session", "pid": std::process::id(), "version":crate::utils::version(),
         "started_ms": epoch_ms(), "direct_target": direct_target,
+        "render_device": render_node.dev_id(), "copy_device_role": format!("{copy_device:?}"),
         "executable": std::env::current_exe().ok(),
         "window_ms": WINDOW.as_millis(),
         "clock": "CPU wall / CLOCK_MONOTONIC presentation",
@@ -366,7 +372,7 @@ fn register_control(
                 None
             } else if command == "direct on" || command == "direct off" {
                 if !startup_direct {
-                    Some("restart with NIRI_VK_DIRECT_TARGET=1 to compare fixed LINEAR swapchains")
+                    Some("restart with NIRI_VK_DIRECT_TARGET=1 to enable transfer-policy comparisons")
                 } else {
                     let enabled = command == "direct on";
                     state.backend.tty().gpu_manager.set_vulkan_direct_target_enabled(enabled);
@@ -409,7 +415,7 @@ fn control_status(command: &str, error: Option<&str>, report: &ReportState) -> s
         "timestamp_ms":epoch_ms(), "command":command, "accepted":error.is_none(), "error":error,
         "phase":report.phase, "recording":timing::enabled(), "direct_target":report.direct_target,
         "writer_ready":report.writer_ready.load(Ordering::Acquire),
-        "allocation_policy":"unchanged_from_startup"
+        "allocation_policy":"preserved; capabilities may renegotiate buffers"
     })
 }
 
