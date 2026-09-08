@@ -75,7 +75,7 @@ impl SurfaceTiming {
         }
         if self
             .last_event
-            .is_some_and(|(previous, _, _)| previous == sequence)
+            .is_some_and(|(previous, time, _)| previous == sequence && time == presentation)
         {
             return;
         }
@@ -109,8 +109,11 @@ impl SurfaceTiming {
             return;
         }
         if let Some((previous_sequence, previous)) = self.last_counted {
-            if previous_sequence == sequence {
+            if previous_sequence == sequence && previous == actual {
                 return;
+            }
+            if previous_sequence == sequence {
+                timing::count(Counter::SequenceUnchanged, 1);
             }
             let distance = sequence.wrapping_sub(previous_sequence);
             if distance < (1 << 31) {
@@ -553,6 +556,53 @@ mod tests {
         assert_eq!(count(Counter::PresentEvents), 1);
         assert_eq!(count(Counter::TransitionPresentationsIgnored), 2);
         assert_eq!(count(Counter::SequenceGaps), 0);
+    }
+
+    #[test]
+    fn advancing_timestamps_with_constant_sequence_are_distinct_presentations() {
+        if !timing::enabled() {
+            return;
+        }
+        let stream = (u64::MAX, 58);
+        timing::register_stream(stream, "constant-sequence-driver");
+        let _scope = timing::enter(stream);
+        let mut surface = SurfaceTiming::default();
+        for milliseconds in [100, 107, 114] {
+            let actual = Duration::from_millis(milliseconds);
+            let queued = Some(QueueStamp {
+                at: actual - Duration::from_millis(2),
+                epoch: EPOCH.load(Ordering::Relaxed),
+            });
+            surface.event(0, actual, actual + Duration::from_millis(1));
+            surface.presented(0, actual, queued, Some(Duration::from_millis(7)));
+            // Duplicate/synthetic delivery must still not count twice.
+            surface.event(0, Duration::ZERO, actual + Duration::from_millis(2));
+            surface.presented(0, actual, queued, Some(Duration::from_millis(7)));
+        }
+        let snapshot = timing::drain()
+            .into_iter()
+            .find(|s| s.id == stream)
+            .unwrap();
+        let count = |counter| {
+            snapshot
+                .counters
+                .iter()
+                .find(|(c, _)| *c == counter)
+                .map_or(0, |(_, v)| *v)
+        };
+        assert_eq!(count(Counter::PresentEvents), 3);
+        assert_eq!(count(Counter::SequenceUnchanged), 2);
+        assert_eq!(count(Counter::SequenceGaps), 0);
+        let interval = snapshot
+            .metrics
+            .iter()
+            .find(|(s, _)| *s == Stage::PresentationInterval)
+            .unwrap()
+            .1
+            .summary();
+        assert_eq!(interval.count, 2);
+        assert_eq!(interval.min_ns, 7_000_000);
+        assert_eq!(interval.max_ns, 7_000_000);
     }
 
     #[test]
