@@ -103,6 +103,46 @@ NVIDIA-native client surfaces on Intel.
 
 Smithay reverse-route checkpoint: `61dafe41`.
 
-Offscreen validation and source reviews passed. Actual NVIDIA atomic modifier
-transition / copy-fence page-flip acceptance remains an explicitly approved live
-session test. No power or frame-pacing benefit is claimed yet.
+Offscreen validation and source reviews passed. The user approved an Intel-primary
+session and confirmed all three outputs render correctly, including moved windows.
+NVIDIA native AB30 modifier negotiation and real direct-copy page flips succeeded
+on DP-1 and HDMI-A-1 with no observed render/queue errors. eDP-1 stayed native Intel.
+
+## Single-copy live checkpoint
+
+Graphics checkpoint niri `d94814f5` / Smithay `61dafe41`; counter-only follow-up
+niri `ee5b527d` / Smithay `8edc1da0` (same graphics path), running as
+`/home/acters/.local/bin/niri-intel-bridge-counted` with the isolated Intel config.
+NVIDIA's repeated DRM sequence values exposed a diagnostic dedup assumption; the
+follow-up counts distinct (sequence,timestamp) pairs and flags sequence-gap counts
+unavailable when sequence does not advance. It does not modify rendering/scheduling.
+
+Balanced-profile TestUFO measurements on DP-1 (239.760 Hz), monitors closed:
+
+| Route | Stable duration | KMS presentations/sec | Late presentations |
+| --- | ---: | ---: | ---: |
+| Direct NVIDIA Vulkan into native target | 95.02 s | 221.647 | 1721 |
+| Shared Intel buffer sampled by NVIDIA GLES | 195.02 s | 133.954 | 20634 |
+
+Direct route counters matched all 21,060 submitted frames, with native input imports
+twice per copy and no steady resource-set creation/destruction. Host Vulkan setup
+averaged 0.1773 ms, resource checkout 0.0098 ms, and queue return led target time by
+2.48 ms on average. Most late presentations were not CPU queue-start lateness;
+these CPU clocks cannot separate GPU render, dependency, transfer or client costs.
+The shared control had TextureCopies=26,124 and no Vulkan/CPU copies. Native buffer
+policy, renderer, placement and power profile stayed fixed between these trials.
+
+Native eDP-1 measured 143.994/s with no gaps or late presentations over 110s and no
+bridge work. All 15,840 frames used CLIENT direct scanout: this confirms the native
+Intel path but is not a heavy compositor-rendering benchmark.
+
+Raw archive: `/home/acters/.local/state/niri-pacing/frame-timing-reverse-single-copy-3389231.jsonl`.
+Relevant PID3389231 epochs4 (DP direct),9 (DP shared),13 (eDP native). Earlier
+PID3310086 NVIDIA presentation counts are invalid because of the pre-fix dedup;
+its route/error counters and visual test remain separate evidence.
+
+Direct Vulkan substantially improves this reverse comparison but does not yet
+sustain stable 240 Hz. The user requested further tuning while leaving Intel-primary
+active. Next investigate Intel-native tiled composition -> pooled Intel Vulkan detile
+to Intel-owned LINEAR -> pooled NVIDIA Vulkan to native target. Extra copy cost must
+be justified by measurements. No battery/idle-power benefit is established.
