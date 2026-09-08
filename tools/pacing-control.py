@@ -9,14 +9,14 @@ import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("command", choices=("status", "mark", "record", "direct"))
+parser.add_argument("command", choices=("status", "mark", "record", "direct", "detile"))
 parser.add_argument("value", nargs="?")
 parser.add_argument("--pid", type=int)
 args = parser.parse_args()
 if args.command == "mark" and args.value is not None:
     args.value = args.value.strip()
-if args.command in ("record", "direct") and args.value not in ("on", "off"):
-    parser.error("record/direct require on or off")
+if args.command in ("record", "direct", "detile") and args.value not in ("on", "off"):
+    parser.error("record/direct/detile require on or off")
 if args.command == "status" and args.value is not None:
     parser.error("status takes no value")
 if args.command == "mark" and (not args.value or len(args.value) > 80 or

@@ -526,6 +526,8 @@ impl Tty {
                 VulkanCopyDevice::Render
             }
         };
+        let source_detile = std::env::var_os("NIRI_VK_SOURCE_DETILE").is_some_and(|v| v == "1");
+        gpu_manager.set_vulkan_source_detile_enabled(source_detile);
         gpu_manager.set_vulkan_transfer_enabled(vulkan_transfer);
         gpu_manager.set_vulkan_copy_device(vulkan_copy_device);
         gpu_manager.set_vulkan_direct_target_enabled(direct_target_transfer);
@@ -562,6 +564,7 @@ impl Tty {
             direct_target_transfer,
             primary_render_node,
             vulkan_copy_device,
+            source_detile,
         );
 
         Ok(Self {

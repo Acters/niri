@@ -36,7 +36,7 @@ with open(args.path, encoding="utf-8") as source:
         if row.get("elapsed_ns", 0) < 4_000_000_000:
             skipped["partial_window"] += 1
             continue
-        key = (row.get("pid"), row.get("epoch"), row.get("phase", "unlabeled"), row.get("direct_target"))
+        key = (row.get("pid"), row.get("epoch"), row.get("phase", "unlabeled"), row.get("direct_target"), row.get("source_detile", False))
         group = groups.setdefault(key, {"elapsed": 0, "windows": 0, "counters": collections.Counter(), "metrics": {}})
         group["elapsed"] += row["elapsed_ns"]
         group["windows"] += 1
@@ -52,11 +52,11 @@ with open(args.path, encoding="utf-8") as source:
             if "min_ns" in metric:
                 dst["min"] = metric["min_ns"] if dst["min"] is None else min(dst["min"], metric["min_ns"])
 
-for (pid, epoch, phase, direct), group in groups.items():
+for (pid, epoch, phase, direct, detile), group in groups.items():
     seconds = group["elapsed"] / 1e9
     counters = group["counters"]
     sequence_gaps = "unavailable (sequence repeated)" if counters["SequenceUnchanged"] else str(counters["SequenceGaps"])
-    print(f"\n{args.output}: pid={pid} epoch={epoch} phase={phase} direct={direct}, {group['windows']} windows / {seconds:.2f}s")
+    print(f"\n{args.output}: pid={pid} epoch={epoch} phase={phase} direct={direct} detile={detile}, {group['windows']} windows / {seconds:.2f}s")
     print(f"submitted={counters['FramesSubmitted']/seconds:.3f}/s presented={counters['PresentEvents']/seconds:.3f}/s "
           f"sequence_gaps={sequence_gaps} late_presentations={counters['PresentLate']} "
           f"queue_start_late={counters['QueuePastDeadline']} queue_return_late={counters['QueueReturnedPastDeadline']}")

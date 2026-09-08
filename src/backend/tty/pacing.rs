@@ -160,6 +160,7 @@ struct Window {
     dropped_windows: u64,
     phase: String,
     direct_target: bool,
+    source_detile: bool,
     recording: bool,
     streams: Vec<StreamSnapshot>,
 }
@@ -175,6 +176,7 @@ struct ReportState {
     dropped: u64,
     phase: String,
     direct_target: bool,
+    source_detile: bool,
 }
 
 struct ControlSocket {
@@ -199,6 +201,7 @@ pub(super) fn register_reporter(
     direct_target: bool,
     render_node: DrmNode,
     copy_device: smithay::backend::renderer::multigpu::VulkanCopyDevice,
+    source_detile: bool,
 ) {
     if !timing::enabled() {
         return;
@@ -214,6 +217,7 @@ pub(super) fn register_reporter(
         "type": "session", "pid": std::process::id(), "version":crate::utils::version(),
         "started_ms": epoch_ms(), "direct_target": direct_target,
         "render_device": render_node.dev_id(), "copy_device_role": format!("{copy_device:?}"),
+        "source_detile": source_detile,
         "executable": std::env::current_exe().ok(),
         "window_ms": WINDOW.as_millis(),
         "clock": "CPU wall / CLOCK_MONOTONIC presentation",
@@ -252,7 +256,7 @@ pub(super) fn register_reporter(
                     let row = serde_json::json!({
                         "type":"window", "pid":std::process::id(), "epoch":window.epoch, "timestamp_ms":window.timestamp_ms,
                         "elapsed_ns":window.elapsed_ns, "dropped_windows":window.dropped_windows,
-                        "phase":window.phase, "direct_target":window.direct_target, "recording":window.recording,
+                        "phase":window.phase, "direct_target":window.direct_target, "source_detile":window.source_detile, "recording":window.recording,
                         "output":stream.label, "device":stream.id.0, "crtc":stream.id.1,
                         "metrics":metrics, "counters":counters
                     });
@@ -276,8 +280,15 @@ pub(super) fn register_reporter(
         dropped: 0,
         phase: "startup".into(),
         direct_target,
+        source_detile,
     }));
-    register_control(event_loop, sender.clone(), reporting.clone(), direct_target);
+    register_control(
+        event_loop,
+        sender.clone(),
+        reporting.clone(),
+        direct_target,
+        copy_device == smithay::backend::renderer::multigpu::VulkanCopyDevice::Target,
+    );
     if let Err(err) = event_loop.insert_source(Timer::from_duration(WINDOW), move |_, _, _| {
         let end = Instant::now();
         let mut reporting = reporting.borrow_mut();
@@ -288,6 +299,7 @@ pub(super) fn register_reporter(
             dropped_windows: reporting.dropped,
             phase: reporting.phase.clone(),
             direct_target: reporting.direct_target,
+            source_detile: reporting.source_detile,
             recording: timing::enabled(),
             streams: timing::drain(),
         };
@@ -310,6 +322,7 @@ fn register_control(
     sender: SyncSender<Report>,
     reporting: Rc<RefCell<ReportState>>,
     startup_direct: bool,
+    target_copy: bool,
 ) {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
         warn!("no XDG_RUNTIME_DIR; frame timing control socket disabled");
@@ -341,7 +354,7 @@ fn register_control(
         warn!("could not secure pacing control socket: {err}");
         return;
     }
-    info!(path = %control.path.display(), "frame timing controls ready (status, mark LABEL, record on/off, direct on/off)");
+    info!(path = %control.path.display(), "frame timing controls ready (status, mark LABEL, record on/off, direct on/off, detile on/off)");
     let source = Generic::new(control, Interest::READ, Mode::Level);
     if let Err(err) = event_loop.insert_source(source, move |_, control, state| {
         // Bound command handling even if a local sender floods the diagnostics socket.
@@ -373,6 +386,16 @@ fn register_control(
             } else if command == "record on" || command == "record off" {
                 timing::set_enabled(command == "record on");
                 None
+            } else if command == "detile on" || command == "detile off" {
+                if !startup_direct || !target_copy {
+                    Some("source detile comparison requires startup direct transfer and target copy device")
+                } else {
+                    let enabled = command == "detile on";
+                    state.backend.tty().gpu_manager.set_vulkan_source_detile_enabled(enabled);
+                    report.source_detile = enabled;
+                    state.niri.queue_redraw_all();
+                    None
+                }
             } else if command == "direct on" || command == "direct off" {
                 if !startup_direct {
                     Some("restart with NIRI_VK_DIRECT_TARGET=1 to enable transfer-policy comparisons")
@@ -417,6 +440,7 @@ fn control_status(command: &str, error: Option<&str>, report: &ReportState) -> s
         "type":"control", "pid":std::process::id(), "epoch":EPOCH.load(Ordering::Relaxed),
         "timestamp_ms":epoch_ms(), "command":command, "accepted":error.is_none(), "error":error,
         "phase":report.phase, "recording":timing::enabled(), "direct_target":report.direct_target,
+        "source_detile":report.source_detile,
         "writer_ready":report.writer_ready.load(Ordering::Acquire),
         "allocation_policy":"preserved; capabilities may renegotiate buffers"
     })
