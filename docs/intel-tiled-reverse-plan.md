@@ -43,7 +43,7 @@ identical source work, full redraw, format, extent and warmup for both routes.
 
 The first implementation/adoption gate is positive proxy results, followed by
 correctness review, full pixel/fence tests, and an approved session restart.
-Intel-primary single-copy remains running with recording off during investigation.
+During initial investigation, Intel-primary single-copy remained running with recording off.
 
 ## Controlled proxy results
 
@@ -96,5 +96,63 @@ Strict linting, feature isolation and 222 niri/config/IPC tests pass.
 
 Smithay implementation checkpoint: `38659b6b`.
 
-The running single-copy session is unchanged; real tiled-route pacing awaits an
-approved candidate install/restart and matched live comparison.
+## Live result: keep detiling disabled
+
+The user approved candidate niri `f0f77513` / Smithay `38659b6b`, installed separately
+as `niri-intel-detile`, with Intel primary and the same NVIDIA-native targets. The
+same-binary balanced-profile DP-1 comparison rejected the two-leg optimization:
+
+| Phase (PID3593183) | Duration | Presentations/sec | Late presentations |
+| --- | ---: | ---: | ---: |
+| Single-copy baseline, epoch4 | 415.06s | 198.296 | 17209 |
+| Detile on, epoch9 | 315.05s | 160.602 | 24937 |
+| Single-copy recovery, epoch13 | 205.03s | 200.710 | 8006 |
+
+Counters verified DetileCopies=DirectCopies=50,597 during the two-leg trial, two
+logical submissions per frame, and no steady resource-set creation/destruction or
+CPU-copy fallback. Host detile/target copy setup averaged ~0.193/~0.195ms. Most
+frames were queued before their deadline; the extra dependency/copy chain was worse
+for real pacing despite its win in the four-clear proxy. This is why the proxy was
+not used as an adoption claim. Detiling was turned off and remains default-off.
+
+The source and probe are retained as an experimental path, not a recommended
+performance optimization. No renderer/presentation safety failure was observed in
+these tests; improved pixel correctness alone does not justify a slower default.
+
+## Matched quiet power-profile control
+
+The user selected performance and reported roughly stable238 FPS with only Chromium
+TestUFO. After recording that condition, the user approved changing ONLY the power
+profile to balanced, keeping the same single-copy path and quiet workload, then
+restoring performance:
+
+| Profile / phase | Duration | Presentations/sec | Late | CPU queue-start late |
+| --- | ---: | ---: | ---: | ---: |
+| Performance, epoch16 | 105.01s | 239.007 | 79 | 0 |
+| Balanced, epoch19 | 80.01s | 187.625 | 4165 | 38 |
+
+DP-1 mode is239.760Hz, not exactly240. Performance greatly reduced variability but
+was not perfectly full-rate. Whole-frame host time averaged0.697ms in performance
+versus1.591ms in the quiet balanced run. `powerprofilesctl list` identified CpuDriver
+`intel_pstate` (balanced PlatformDriver placeholder); current EPP read performance.
+Thus CPU power/performance policy is a strong contributor, not evidence isolating
+NVIDIA GPU downclocking or one particular clock/firmware mechanism. These are host
+wall timings and sequential trials, not direct frequency/GPU-execution measurements.
+NVIDIA sequence-gap counts remain unavailable because sequence values repeat.
+
+Raw archive:
+`/home/acters/.local/state/niri-pacing/frame-timing-detile-and-power-3593183.jsonl`.
+Use the recorded PID/epoch/phase and `tools/analyze-frame-timing.py`.
+
+## Final retained configuration
+
+The user chose to restore NVIDIA-primary pooled rendering. `99-reverse-bridge-test.conf`
+was archived and removed; `99-pacing-diagnostics.conf` again selects `niri-pooled`
+(`eca35507`), original NVIDIA-primary config, direct target enabled, recording off.
+Restoration verified renderD129 and all three original output modes. Performance
+profile was left unchanged as selected by the user; no silent power-policy reset.
+
+Single-copy reverse and experimental detile branches, binaries, the Intel test
+config, and data remain available. The reverse override is saved at
+`/home/acters/.local/state/niri-pacing/reverse-bridge-test.conf.saved` for explicit
+future experiments. No new commits have been pushed.

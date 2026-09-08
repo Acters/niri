@@ -142,7 +142,14 @@ PID3310086 NVIDIA presentation counts are invalid because of the pre-fix dedup;
 its route/error counters and visual test remain separate evidence.
 
 Direct Vulkan substantially improves this reverse comparison but does not yet
-sustain stable 240 Hz. The user requested further tuning while leaving Intel-primary
-active. Next investigate Intel-native tiled composition -> pooled Intel Vulkan detile
-to Intel-owned LINEAR -> pooled NVIDIA Vulkan to native target. Extra copy cost must
-be justified by measurements. No battery/idle-power benefit is established.
+sustain stable 240 Hz. The user requested further tuning while initially leaving Intel-primary active.
+The subsequent tiled-source/two-leg experiment was correct but slower in live tests;
+see [intel-tiled-reverse-plan.md](intel-tiled-reverse-plan.md). Matched quiet
+single-copy power-profile tests measured239.007/s on performance versus187.625/s on
+balanced, with intel_pstate as the profile driver. This does not isolate a GPU clock
+mechanism or establish a battery/idle-power benefit.
+
+The user ultimately chose to restore the NVIDIA-primary pooled build. That default
+is active again with direct target enabled and recording off; performance profile
+was left as selected. Reverse implementations/configs and all measurements remain
+available for explicit future testing, not automatic renderer switching.
