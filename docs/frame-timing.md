@@ -134,5 +134,8 @@ minimum and explicit late counters are useful anchors.
 ## Status
 
 Implementation and unit/measurement review are complete. Smithay checkpoint:
-`6bbc494f`. No instrumented session has been installed or measured yet. Any eventual bottleneck conclusion must come
-from the controlled measurements, not from the existence of these counters.
+`6bbc494f`; niri diagnostic checkpoint `7f927e31`. The controlled trials have now
+been run. Results and the preserved raw-data location are in
+[frame-timing-results.md](frame-timing-results.md). Direct mode was restored and
+recording disabled after the comparisons. No rendering optimization was mixed into
+the measurement build.

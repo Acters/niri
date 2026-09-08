@@ -1,5 +1,8 @@
 # eDP-1 frame pacing and monitoring overhead
 
+This records the initial polling investigation. The subsequent instrumented A/B
+measurements locate the CPU stalls; see [frame-timing-results.md](frame-timing-results.md).
+
 ## Build and configuration
 
 - Running niri code: `9ee3ff77`; Smithay code: `0e2ad6d1`.
