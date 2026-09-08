@@ -70,6 +70,10 @@ use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
+mod pacing;
+
+use smithay::backend::renderer::multigpu::timing::{self, Counter, Stage};
+
 // When copying from rendering Nvidia dGPU to target iGPU,
 // it only understands X/Abgr and not X/Argb.
 const SUPPORTED_COLOR_FORMATS_10BIT: [Fourcc; 3] =
@@ -126,9 +130,16 @@ pub type TtyRendererError<'render> = <TtyRenderer<'render> as RendererSuper>::Er
 type GbmDrmCompositor = DrmCompositor<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
-    (OutputPresentationFeedback, Duration),
+    PresentationData,
     DrmDeviceFd,
 >;
+
+struct PresentationData {
+    feedback: OutputPresentationFeedback,
+    target: Duration,
+    // Captured only while opt-in timing is enabled, without any extra GPU query.
+    queue_started: Option<pacing::QueueStamp>,
+}
 
 pub struct OutputDevice {
     token: RegistrationToken,
@@ -373,6 +384,18 @@ struct TtyOutputState {
     crtc: crtc::Handle,
 }
 
+pub(crate) fn timing_scope(output: &Output) -> Option<timing::ScopeGuard> {
+    if !timing::enabled() {
+        return None;
+    }
+    let id = output
+        .user_data()
+        .get::<TtyOutputState>()
+        .map(|state| pacing::id(state.node, state.crtc))
+        .unwrap_or((u64::MAX, u32::MAX));
+    timing::enter(id)
+}
+
 struct Surface {
     name: OutputName,
     compositor: GbmDrmCompositor,
@@ -390,6 +413,7 @@ struct Surface {
     /// Plot name for the presentation misprediction plot.
     presentation_misprediction_plot_name: tracy_client::PlotName,
     sequence_delta_plot_name: tracy_client::PlotName,
+    pacing: pacing::SurfaceTiming,
 }
 
 pub struct SurfaceDmabufFeedback {
@@ -477,6 +501,7 @@ impl Tty {
             vulkan_transfer && std::env::var_os("NIRI_VK_DIRECT_TARGET").is_some_and(|v| v == "1");
         gpu_manager.set_vulkan_transfer_enabled(vulkan_transfer);
         gpu_manager.set_vulkan_direct_target_enabled(direct_target_transfer);
+        pacing::register_reporter(&event_loop, direct_target_transfer);
 
         let (primary_node, primary_render_node) = primary_node_from_config(&config.borrow())
             .ok_or(())
@@ -1606,6 +1631,7 @@ impl Tty {
         let sequence_delta_plot_name =
             tracy_client::PlotName::new_leak(format!("{connector_name} sequence delta"));
 
+        timing::register_stream(pacing::id(node, crtc), &connector_name);
         let surface = Surface {
             name: output_name,
             connector: connector.handle(),
@@ -1618,6 +1644,7 @@ impl Tty {
             time_since_presentation_plot_name,
             presentation_misprediction_plot_name,
             sequence_delta_plot_name,
+            pacing: pacing::SurfaceTiming::default(),
         };
 
         let res = device.surfaces.insert(crtc, surface);
@@ -1693,6 +1720,8 @@ impl Tty {
         meta: DrmEventMetadata,
     ) {
         let span = tracy_client::span!("Tty::on_vblank");
+        let _timing_scope = timing::enter(pacing::id(node, crtc));
+        let _vblank_time = timing::time(Stage::NiriVblank);
 
         let now = get_monotonic_time();
 
@@ -1776,6 +1805,8 @@ impl Tty {
             presentation_time
         };
 
+        surface.pacing.event(meta.sequence, presentation_time, now);
+
         if output_state
             .vblank_throttle
             .throttle(refresh_interval, time, move |state| {
@@ -1812,8 +1843,21 @@ impl Tty {
         };
 
         // Mark the last frame as submitted.
-        match surface.compositor.frame_submitted() {
-            Ok(Some((mut feedback, target_presentation_time))) => {
+        let retire_time = timing::time(Stage::NiriPresentRetire);
+        let presented_result = surface.compositor.frame_submitted();
+        drop(retire_time);
+        match presented_result {
+            Ok(Some(PresentationData {
+                mut feedback,
+                target: target_presentation_time,
+                queue_started,
+            })) => {
+                surface.pacing.presented(
+                    meta.sequence,
+                    target_presentation_time,
+                    queue_started,
+                    refresh_interval,
+                );
                 let refresh = match refresh_interval {
                     Some(refresh) => {
                         if output_state.frame_clock.vrr() {
@@ -1932,6 +1976,9 @@ impl Tty {
         let mut rv = RenderResult::Skipped;
 
         let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+        let _timing_scope = timing::enter(pacing::id(tty_state.node, tty_state.crtc));
+        let _frame_time = timing::time(Stage::NiriFrame);
+        timing::count(Counter::FrameAttempts, 1);
         let Some(device) = self.devices.get_mut(&tty_state.node) else {
             error!("missing output device");
             return rv;
@@ -1943,6 +1990,7 @@ impl Tty {
         };
 
         span.emit_text(&surface.name.connector);
+        surface.pacing.render_start(target_presentation_time);
 
         if !device.drm.is_active() {
             // This branch hits any time we try to render while the user had switched to a
@@ -1950,6 +1998,7 @@ impl Tty {
             return rv;
         }
 
+        let prepare_time = timing::time(Stage::NiriPrepare);
         let mut renderer = match self.gpu_manager.renderer(
             &self.primary_render_node,
             &device.render_node.unwrap_or(self.primary_render_node),
@@ -1958,17 +2007,21 @@ impl Tty {
             Ok(renderer) => renderer,
             Err(err) => {
                 warn!("error creating renderer for primary GPU: {err:?}");
+                timing::count(Counter::RenderErrors, 1);
                 return rv;
             }
         };
 
+        drop(prepare_time);
         // Render the elements.
+        let elements_time = timing::time(Stage::NiriElements);
         let ctx = RenderCtx {
             renderer: &mut renderer,
             target: RenderTarget::Output,
             xray: None,
         };
         let mut elements = niri.render_to_vec(ctx, output, true);
+        drop(elements_time);
 
         // Visualize the damage, if enabled.
         if niri.debug_draw_damage {
@@ -2010,8 +2063,14 @@ impl Tty {
 
         // Hand them over to the DRM.
         let drm_compositor = &mut surface.compositor;
-        match drm_compositor.render_frame::<_, _>(&mut renderer, &elements, [0.; 4], flags) {
+        let render_time = timing::time(Stage::NiriRender);
+        let render_result =
+            drm_compositor.render_frame::<_, _>(&mut renderer, &elements, [0.; 4], flags);
+        drop(render_time);
+        match render_result {
             Ok(res) => {
+                let swapchain_frame =
+                    matches!(res.primary_element, PrimaryPlaneElement::Swapchain(_));
                 let needs_sync = res.needs_sync()
                     || self
                         .config
@@ -2021,6 +2080,7 @@ impl Tty {
                 if needs_sync {
                     if let PrimaryPlaneElement::Swapchain(element) = res.primary_element {
                         let _span = tracy_client::span!("wait for completion");
+                        let _time = timing::time(Stage::NiriSyncWait);
                         if let Err(err) = element.sync.wait() {
                             warn!("error waiting for frame completion: {err:?}");
                         }
@@ -2035,10 +2095,28 @@ impl Tty {
                 if !res.is_empty {
                     let presentation_feedbacks =
                         niri.take_presentation_feedbacks(output, &res.states);
-                    let data = (presentation_feedbacks, target_presentation_time);
+                    let queue_started = pacing::queue_stamp();
+                    let data = PresentationData {
+                        feedback: presentation_feedbacks,
+                        target: target_presentation_time,
+                        queue_started,
+                    };
 
-                    match drm_compositor.queue_frame(data) {
+                    let queue_time = timing::time(Stage::NiriQueue);
+                    let queue_result = drm_compositor.queue_frame(data);
+                    drop(queue_time);
+                    match queue_result {
                         Ok(()) => {
+                            timing::count(Counter::FramesSubmitted, 1);
+                            timing::count(
+                                if swapchain_frame {
+                                    Counter::SwapchainFrames
+                                } else {
+                                    Counter::ClientScanoutFrames
+                                },
+                                1,
+                            );
+                            pacing::queued(target_presentation_time, queue_started);
                             let output_state = niri.output_state.get_mut(output).unwrap();
                             let new_state = RedrawState::WaitingForVBlank {
                                 redraw_needed: false,
@@ -2062,15 +2140,18 @@ impl Tty {
                             return RenderResult::Submitted;
                         }
                         Err(err) => {
+                            timing::count(Counter::QueueErrors, 1);
                             warn!("error queueing frame: {err}");
                         }
                     }
                 } else {
+                    timing::count(Counter::FramesNoDamage, 1);
                     rv = RenderResult::NoDamage;
                 }
             }
             Err(err) => {
                 // Can fail if we switched to a different TTY.
+                timing::count(Counter::RenderErrors, 1);
                 warn!("error rendering frame: {err}");
             }
         }

@@ -4607,6 +4607,10 @@ impl Niri {
 
     fn redraw(&mut self, backend: &mut Backend, output: &Output) {
         let _span = tracy_client::span!("Niri::redraw");
+        let _timing_scope = crate::backend::tty::timing_scope(output);
+        let _redraw_time = smithay::backend::renderer::multigpu::timing::time(
+            smithay::backend::renderer::multigpu::timing::Stage::NiriRedraw,
+        );
 
         // Verify our invariant.
         let state = self.output_state.get_mut(output).unwrap();
@@ -4620,7 +4624,11 @@ impl Niri {
         // Freeze the clock at the target time.
         self.clock.set_unadjusted(target_presentation_time);
 
+        let scene_time = smithay::backend::renderer::multigpu::timing::time(
+            smithay::backend::renderer::multigpu::timing::Stage::NiriSceneUpdate,
+        );
         self.update_render_elements(Some(output));
+        drop(scene_time);
 
         let mut res = RenderResult::Skipped;
         if self.monitors_active {
@@ -4717,6 +4725,9 @@ impl Niri {
         // However, this should probably be restricted to sending frame callbacks to more surfaces,
         // to err on the safe side.
         self.send_frame_callbacks(output);
+        let _capture_time = smithay::backend::renderer::multigpu::timing::time(
+            smithay::backend::renderer::multigpu::timing::Stage::NiriScreenCast,
+        );
         backend.with_primary_renderer(|renderer| {
             #[cfg(feature = "xdp-gnome-screencast")]
             {
@@ -5044,6 +5055,10 @@ impl Niri {
 
     pub fn send_frame_callbacks(&mut self, output: &Output) {
         let _span = tracy_client::span!("Niri::send_frame_callbacks");
+        let _timing_scope = crate::backend::tty::timing_scope(output);
+        let _callback_time = smithay::backend::renderer::multigpu::timing::time(
+            smithay::backend::renderer::multigpu::timing::Stage::NiriCallbacks,
+        );
 
         let state = self.output_state.get(output).unwrap();
         let sequence = state.frame_callback_sequence;
