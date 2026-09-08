@@ -41,6 +41,7 @@ pub mod misc;
 pub mod output;
 pub mod recent_windows;
 pub mod utils;
+pub mod vulkan_bridge;
 pub mod window_rule;
 pub mod workspace;
 
@@ -59,6 +60,8 @@ use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{Flag, MergeWith as _};
+use crate::vulkan_bridge::VulkanBridgePart;
+pub use crate::vulkan_bridge::{BridgeCopyDevice, BridgeTiming, VulkanBridge};
 pub use crate::window_rule::{
     FloatingPosition, OnXdgActivate, PopupsRule, RelativeTo, ResolvedPopupsRules, WindowRule,
 };
@@ -92,6 +95,8 @@ pub struct Config {
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
+    /// When present, replaces the whole legacy environment-controlled bridge policy.
+    pub vulkan_bridge: Option<VulkanBridge>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +208,14 @@ where
                 "xwayland-satellite" => m_merge!(xwayland_satellite),
                 "switch-events" => m_merge!(switch_events),
                 "debug" => m_merge!(debug),
+                "vulkan-bridge" => {
+                    let part = VulkanBridgePart::decode_node(node, ctx)?;
+                    config
+                        .borrow_mut()
+                        .vulkan_bridge
+                        .get_or_insert_with(VulkanBridge::default)
+                        .merge_with(&part);
+                }
 
                 // Multipart sections.
                 "output" => {
@@ -2421,6 +2434,7 @@ mod tests {
                     },
                 ],
             },
+            vulkan_bridge: None,
         }
         "#);
     }

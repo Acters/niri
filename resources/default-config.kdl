@@ -3,6 +3,18 @@
 // Check the wiki for a full description of the configuration:
 // https://niri-wm.github.io/niri/Configuration:-Introduction
 
+// This fork's pooled cross-GPU bridge can be configured in KDL.
+// An explicit block overrides legacy bridge environment settings.
+// Uncomment to opt in. Use copy-device "target" for Intel-renderer -> NVIDIA-scanout;
+// "render" selects the NVIDIA-renderer -> Intel-scanout path on the tested laptop.
+// GPU node selection remains debug.render-drm-device. Restart to apply these settings.
+// See docs/bidirectional-vulkan-bridge.md for defaults, diagnostics and hardware caveats.
+// vulkan-bridge {
+//     enabled true
+//     direct-target true
+//     copy-device "render"
+// }
+
 // Input device configuration.
 // Find the full list of options on the wiki:
 // https://niri-wm.github.io/niri/Configuration:-Input

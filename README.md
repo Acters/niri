@@ -12,6 +12,13 @@
 
 <img width="1280" height="720" alt="niri with a few windows open" src="https://github.com/user-attachments/assets/dea5909e-1859-4aaa-9d88-d37f9663e00b" />
 
+## Bidirectional Vulkan bridge fork
+
+This branch combines the pooled NVIDIA→Intel and Intel→NVIDIA single-copy paths.
+Configure either through `config.kdl`; see the
+[bridge configuration and build guide](docs/bidirectional-vulkan-bridge.md).
+The slower two-stage detile experiment is not included here.
+
 ## About
 
 Windows are arranged in columns on an infinite strip going to the right.

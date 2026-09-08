@@ -1495,6 +1495,10 @@ impl State {
         let mut xwls_changed = false;
         let mut old_config = self.niri.config.borrow_mut();
 
+        if old_config.vulkan_bridge != config.vulkan_bridge {
+            warn!("vulkan-bridge settings changed; restart niri to apply GPU allocation and timing policy");
+        }
+
         // Reload the cursor.
         if config.cursor != old_config.cursor {
             self.niri

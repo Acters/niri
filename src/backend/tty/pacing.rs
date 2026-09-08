@@ -192,19 +192,20 @@ impl Drop for ControlSocket {
     }
 }
 
-/// No timer, thread or file is created unless SMITHAY_FRAME_TIMING=1. A supplied file path
+/// No timer, thread or file is created unless resolved bridge timing is enabled. A supplied file path
 /// is required to avoid unexpectedly writing diagnostics elsewhere. The file is append-only.
 pub(super) fn register_reporter(
     event_loop: &LoopHandle<'static, State>,
     direct_target: bool,
     render_node: DrmNode,
     copy_device: smithay::backend::renderer::multigpu::VulkanCopyDevice,
+    output: Option<PathBuf>,
 ) {
     if !timing::enabled() {
         return;
     }
-    let Some(path) = std::env::var_os("NIRI_FRAME_TIMING_FILE").map(PathBuf::from) else {
-        warn!("SMITHAY_FRAME_TIMING enabled without NIRI_FRAME_TIMING_FILE; no reports will be written");
+    let Some(path) = output else {
+        warn!("bridge timing enabled without an output path; no reports will be written");
         return;
     };
     let (sender, receiver) = sync_channel::<Report>(2);
@@ -375,7 +376,7 @@ fn register_control(
                 None
             } else if command == "direct on" || command == "direct off" {
                 if !startup_direct {
-                    Some("restart with NIRI_VK_DIRECT_TARGET=1 to enable transfer-policy comparisons")
+                    Some("restart with vulkan-bridge enabled and direct-target true to enable transfer-policy comparisons")
                 } else {
                     let enabled = command == "direct on";
                     state.backend.tty().gpu_manager.set_vulkan_direct_target_enabled(enabled);

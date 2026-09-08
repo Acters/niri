@@ -188,7 +188,8 @@ assets = [
     ["resources/niri-shutdown.target", "/usr/lib/systemd/user/", "644"],
 ]
 
-# Fork with the vulkan bridge for multigpu cross-device copies.
+# Pooled bidirectional bridge, pinned to the validated single-copy implementation.
+# Both packages must use the same fork revision. No sibling checkout is required.
 [patch."https://github.com/Smithay/smithay.git"]
-smithay = { path = "../smithay-nvidia-intel-bridge" }
-smithay-drm-extras = { path = "../smithay-nvidia-intel-bridge/smithay-drm-extras" }
+smithay = { git = "https://github.com/Acters/smithay.git", rev = "8edc1da00e599358c2c9cafe38db47c6aff2037f" }
+smithay-drm-extras = { git = "https://github.com/Acters/smithay.git", rev = "8edc1da00e599358c2c9cafe38db47c6aff2037f" }

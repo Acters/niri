@@ -72,6 +72,7 @@ use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
+mod bridge_config;
 mod pacing;
 mod transfer_formats;
 
@@ -513,19 +514,18 @@ impl Tty {
 
         // Transfers preserve the current frame's SyncPoint; normal DRM scheduling
         // handles presentation. Direct target writes are a separate, explicit opt-in.
-        let vulkan_transfer = std::env::var_os("NIRI_VKBRIDGE")
-            .map(|v| v != "0")
-            .unwrap_or(true);
-        let direct_target_transfer =
-            vulkan_transfer && std::env::var_os("NIRI_VK_DIRECT_TARGET").is_some_and(|v| v == "1");
-        let vulkan_copy_device = match std::env::var("NIRI_VK_COPY_DEVICE").as_deref() {
-            Ok("target") => VulkanCopyDevice::Target,
-            Ok("render") | Err(_) => VulkanCopyDevice::Render,
-            Ok(other) => {
-                warn!("unknown NIRI_VK_COPY_DEVICE={other:?}; using render GPU");
-                VulkanCopyDevice::Render
-            }
-        };
+        let bridge = bridge_config::resolve(config.borrow().vulkan_bridge.as_ref(), |key| {
+            std::env::var_os(key)
+        });
+        let vulkan_transfer = bridge.enabled;
+        let direct_target_transfer = bridge.direct_target;
+        let vulkan_copy_device = bridge.copy_device;
+        // KDL timing=false must also override an inherited legacy timing=1.
+        // Do not collect unreportable measurements if no output path was configured.
+        if bridge.timing_enabled && bridge.timing_output.is_none() {
+            warn!("bridge timing requested without an output path; recording disabled");
+        }
+        timing::set_enabled(bridge.timing_enabled && bridge.timing_output.is_some());
         gpu_manager.set_vulkan_transfer_enabled(vulkan_transfer);
         gpu_manager.set_vulkan_copy_device(vulkan_copy_device);
         gpu_manager.set_vulkan_direct_target_enabled(direct_target_transfer);
@@ -562,6 +562,7 @@ impl Tty {
             direct_target_transfer,
             primary_render_node,
             vulkan_copy_device,
+            bridge.timing_output,
         );
 
         Ok(Self {
