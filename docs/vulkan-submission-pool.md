@@ -117,8 +117,58 @@ Smithay optimization checkpoint: `e6912c04`.
 
 Offscreen validation passed, including full-HD ten-bit direct-target capture/damage
 checks. Strict niri/Smithay linting, feature isolation and 220 niri/config/IPC
-regression tests pass. The optimized compositor has not yet been installed; real
-pacing/performance benefit remains unmeasured until the coordinated session.
+regression tests pass. The optimized compositor was subsequently installed and measured as described below.
 
 The temporary unpooled reference worktree was removed after preserving its exact
 test patch and log under `/home/acters/.local/state/niri-pacing/`.
+
+## Approved live comparison
+
+The user approved one restart into the optimized release, niri `eca35507` linked
+against Smithay `e6912c04`, installed separately as
+`/home/acters/.local/bin/niri-pooled`. The prior `niri-pacing` and `niri-direct-target`
+binaries remain untouched. Direct-target transfer, LINEAR scanout, quiet logging,
+balanced power profile, browser placement and btop settings stayed consistent with
+the recorded baseline. Btop ran hidden on an inactive workspace; nvtop/nvidia-smi
+were closed during measurement.
+
+| Direct-target mode | Before pooling | Pooled |
+| --- | ---: | ---: |
+| Btop closed | 143.489 presentations/s (95.00s) | 143.991/s (110.01s) |
+| Btop hidden/running | 140.464/s (125.02s) | 143.946/s (105.00s) |
+| Btop-on refresh gaps | 441 | 5 |
+| Btop-on late presentations | 215 | 3 |
+
+The pooled closed window had zero refresh gaps/late presentations. The btop-on
+window had five gaps in 105s, versus 441 in 125s before pooling (about 99% fewer
+per second). The user reported stable ~144 FPS in both pooled conditions and
+explicitly chose to keep the optimized build.
+
+Steady pooled windows showed Reused=Recycled=DirectCopies=FramesSubmitted
+(15,840 closed; 15,115 open), zero ResourceSetsCreated/Destroyed, no pool-busy result,
+no signal replacement and no CPU fence fallback/render/queue errors.
+
+With btop running:
+
+- Vulkan resource checkout/reset averaged 0.0107 ms, versus 0.7919 ms for the old
+  allocation/setup stage; maximum 0.0712 ms versus 16.8859 ms.
+- Presentation retirement averaged 0.0240 ms, versus 0.8142 ms; maximum 0.0600 ms
+  versus 19.8169 ms. Heavy driver destruction no longer occurs there in steady use.
+- Host Vulkan copy setup/submission averaged 0.2330 ms, versus 0.9903 ms.
+
+This is measured improvement on the tested machine, not perfect pacing or proof of
+NVIDIA's internal locking mechanism. Rare delays remain (including a longer render
+outlier), and GPU execution duration was not measured. Different-duration sequential
+trials are not randomized repeated benchmarks. The known future-hardware-timestamp
+caveat remains; zero callback-delay values were not used as proof of ideal delivery.
+
+Raw data: `/home/acters/.local/state/niri-pacing/frame-timing-pooled-20260908-3047773.jsonl`.
+PID 3047773, epochs 4 (`pooled_direct_btop_closed`) and 7 (`pooled_direct_btop_open`).
+Use `tools/analyze-frame-timing.py` to reproduce the stable-window summaries.
+
+Direct mode remains on and recording is off, including for future restarts.
+The service's `99-pacing-diagnostics.conf` selects `niri-pooled`; restoring its
+ExecStart to the preserved `niri-pacing` binary (then a coordinated restart) restores
+the unpooled measurement build. Removing that drop-in restores the earlier
+`niri-direct-target` binary selected by `98-direct-target-test.conf`.
+No optimization commits have been pushed.
